@@ -36,26 +36,19 @@ class AppDownloader(QMainWindow):
         super().__init__()
         self.setWindowTitle(f"{APP_TITLE} - {APP_VERSION}")
         self.resize(900, 700)
-
-        # メニューバー作成
         menubar = QMenuBar(self)
         self.setMenuBar(menubar)
-
-        # ファイルメニュー
         file_menu = QMenu("ファイル", self)
         exit_act = QAction("終了", self)
         exit_act.triggered.connect(self.close)
         file_menu.addAction(exit_act)
         menubar.addMenu(file_menu)
-
-        # バージョンメニュー
         ver_menu = QMenu("バージョン", self)
         ver_act = QAction("バージョン情報", self)
         ver_act.triggered.connect(lambda: QMessageBox.information(self, "バージョン", f"{APP_TITLE} {APP_VERSION}"))
         ver_menu.addAction(ver_act)
         menubar.addMenu(ver_menu)
 
-        # その他メニュー
         other_menu = QMenu("その他", self)
         pages = [
             ("ホームページ", HOMEPAGE_URL),
@@ -77,7 +70,6 @@ class AppDownloader(QMainWindow):
         else:
             logo.setText("Logo not found")
 
-        # 操作ボタン群
         btn_status = QPushButton("ステータスページ")
         btn_status.clicked.connect(lambda: self.open_web("Status", "https://status.hijikinoheya.com/page/index.php"))
         btn_news = QPushButton("ニュース一覧")
@@ -85,7 +77,6 @@ class AppDownloader(QMainWindow):
         btn_license = QPushButton("ライセンス情報")
         btn_license.clicked.connect(lambda: self.open_web("License", LICENSE_URL))
 
-        # カテゴリフィルタ
         self.combo = QComboBox()
         self.combo.addItem("すべてのカテゴリ")
         self.combo.currentTextChanged.connect(self.filter_category)
@@ -98,7 +89,6 @@ class AppDownloader(QMainWindow):
         top_layout.addWidget(btn_license)
         top_layout.addWidget(self.combo)
 
-        # アプリ一覧表示用スクロールエリア
         self.container = QWidget()
         self.vbox = QVBoxLayout(self.container)
         self.vbox.setAlignment(Qt.AlignTop)
@@ -114,11 +104,11 @@ class AppDownloader(QMainWindow):
         central.setLayout(main_layout)
         self.setCentralWidget(central)
 
-        # ネットワークマネージャ
+
         self.manager = QNetworkAccessManager()
         self.manager.finished.connect(self.on_data)
 
-        # 初期データ取得
+
         QTimer.singleShot(0, self.load_data)
 
         self.apps = []
@@ -228,7 +218,6 @@ class SplashManager(QObject):
         count_flag = '-n' if sys.platform.startswith('win') else '-c'
         cmd = ['ping', count_flag, '5', host]
         result = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).wait()
-        # 成功または失敗にかかわらず次のステップへ
         QTimer.singleShot(300, self.step_done)
 
     def wait_one_sec(self):
