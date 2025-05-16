@@ -2,13 +2,17 @@ import sys
 import os
 import json
 import subprocess
-from PyQt5.QtCore import Qt, QUrl, QTimer, QObject, pyqtSignal
+import threading
+import zipfile
+import shutil
+import requests
+from PyQt5.QtCore import Qt, QUrl, QTimer, QObject, pyqtSignal, QSize
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QLabel, QPushButton,
     QVBoxLayout, QHBoxLayout, QScrollArea, QGroupBox, QMessageBox,
-    QComboBox, QMenuBar, QMenu, QAction, QSplashScreen
+    QComboBox, QMenuBar, QMenu, QAction, QSplashScreen, QProgressBar
 )
-from PyQt5.QtGui import QPixmap
+from PyQt5.QtGui import QPixmap, QIcon
 from PyQt5.QtWebEngineWidgets import QWebEngineView
 from PyQt5.QtNetwork import QNetworkAccessManager, QNetworkRequest
 from PyQt5.Qt import QDesktopServices
@@ -26,220 +30,228 @@ class WebWindow(QMainWindow):
     def __init__(self, title, url):
         super().__init__()
         self.setWindowTitle(title)
-        self.resize(800, 600)
+        self.resize(1000, 800)
         view = QWebEngineView()
         view.load(QUrl(url))
         self.setCentralWidget(view)
+        app.setWindowIcon(QIcon('icons.png'))
+
+class DownloadWindow(QWidget):
+    def __init__(self, url, folder_name, parent=None):
+        super().__init__()
+        self.url = url
+        self.folder_name = folder_name
+        self.parent = parent
+        self.zip_name = folder_name + ".zip"
+        self.setWindowTitle(f"ダウンロード: {folder_name}")
+        self.resize(400, 120)
+        layout = QVBoxLayout(self)
+        self.label = QLabel("準備中...", self)
+        self.progress = QProgressBar(self)
+        layout.addWidget(self.label)
+        layout.addWidget(self.progress)
+        self.show()
+        threading.Thread(target=self.download_and_extract, daemon=True).start()
+
+    def download_and_extract(self):
+        self.label.setText("ダウンロード中...")
+        resp = requests.get(self.url, stream=True)
+        total = int(resp.headers.get('content-length', 0))
+        with open(self.zip_name, 'wb') as f:
+            dl = 0
+            for chunk in resp.iter_content(8192):
+                if not chunk: continue
+                f.write(chunk)
+                dl += len(chunk)
+                self.progress.setValue(int(dl * 100 / total))
+        if zipfile.is_zipfile(self.zip_name):
+            self.label.setText("Zipを解凍中...")
+            root = self.folder_name
+            with zipfile.ZipFile(self.zip_name, 'r') as z:
+                z.extractall(root)
+            sub = os.path.join(root, os.path.basename(root))
+            if os.path.isdir(sub):
+                for item in os.listdir(sub): shutil.move(os.path.join(sub, item), root)
+                shutil.rmtree(sub)
+            os.remove(self.zip_name)
+        self.label.setText("完了しました！")
+        self.progress.setValue(100)
+        if self.parent:
+            QTimer.singleShot(0, self.parent.reload_apps)
 
 class AppDownloader(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle(f"{APP_TITLE} - {APP_VERSION}")
-        self.resize(900, 700)
-        menubar = QMenuBar(self)
-        self.setMenuBar(menubar)
-        file_menu = QMenu("ファイル", self)
-        exit_act = QAction("終了", self)
-        exit_act.triggered.connect(self.close)
-        file_menu.addAction(exit_act)
-        menubar.addMenu(file_menu)
-        ver_menu = QMenu("バージョン", self)
-        ver_act = QAction("バージョン情報", self)
-        ver_act.triggered.connect(lambda: QMessageBox.information(self, "バージョン", f"{APP_TITLE} {APP_VERSION}"))
-        ver_menu.addAction(ver_act)
-        menubar.addMenu(ver_menu)
-
-        other_menu = QMenu("その他", self)
-        pages = [
-            ("ホームページ", HOMEPAGE_URL),
-            ("個人情報の取り扱いについて", PAGE_BASE + "personal_info.php"),
-            ("プライバシーポリシー", PAGE_BASE + "privacy-policy.php"),
-            ("利用規約", PAGE_BASE + "terms-of-service.php")
-        ]
+        self._init_size = QSize(900, 700)
+        self.resize(self._init_size)
+        menubar = self.menuBar()
+        # ファイル
+        file_menu = menubar.addMenu("ファイル")
+        file_menu.addAction("終了", self.close)
+        # バージョン
+        ver_menu = menubar.addMenu("バージョン")
+        ver_menu.addAction("バージョン情報", lambda: QMessageBox.information(self, "バージョン", f"{APP_TITLE} {APP_VERSION}"))
+        # その他
+        other = menubar.addMenu("その他")
+        pages = [("ホームページ", HOMEPAGE_URL), ("個人情報", PAGE_BASE+"personal_info.php"),
+                 ("プライバシー", PAGE_BASE+"privacy-policy.php"), ("規約", PAGE_BASE+"terms-of-service.php")]
         for name, url in pages:
-            act = QAction(name, self)
-            act.triggered.connect(lambda chk, u=url, n=name: self.open_web(n, u))
-            other_menu.addAction(act)
-        menubar.addMenu(other_menu)
+            other.addAction(name, lambda chk, u=url, n=name: self.open_web(n, u))
+        # リロード
+        menubar.addAction("リロード", self.reload_apps)
 
-        # ロゴ表示（サイズ調整）
-        logo = QLabel()
+        # ヘッダー
+        header = QWidget(); hbox = QHBoxLayout(header)
+        lbl_logo = QLabel()
         if os.path.exists(LOGO_PATH):
-            pix = QPixmap(LOGO_PATH).scaled(200, 200, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-            logo.setPixmap(pix)
-        else:
-            logo.setText("Logo not found")
+            lbl_logo.setPixmap(QPixmap(LOGO_PATH).scaled(180, 180, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        hbox.addWidget(lbl_logo)
+        hbox.addStretch()
+        header_buttons = [("ステータス","https://status.hijikinoheya.com/page/index.php"),
+                          ("ニュース","https://home.hijikinoheya.com/news/page/index.php"),
+                          ("ライセンス",LICENSE_URL)]
+        for txt, link in header_buttons:
+            btn = QPushButton(txt)
+            btn.clicked.connect(lambda _, u=link, t=txt: self.open_web(t, u))
+            hbox.addWidget(btn)
+        self.combo_os = QComboBox(); self.combo_os.addItem("すべてのOS"); self.combo_os.currentTextChanged.connect(self.filter_items)
+        self.combo_cat = QComboBox(); self.combo_cat.addItem("すべてのカテゴリ"); self.combo_cat.currentTextChanged.connect(self.filter_items)
+        hbox.addWidget(QLabel("OS:")); hbox.addWidget(self.combo_os)
+        hbox.addWidget(QLabel("カテゴリ:")); hbox.addWidget(self.combo_cat)
 
-        btn_status = QPushButton("ステータスページ")
-        btn_status.clicked.connect(lambda: self.open_web("Status", "https://status.hijikinoheya.com/page/index.php"))
-        btn_news = QPushButton("ニュース一覧")
-        btn_news.clicked.connect(lambda: self.open_web("News", "https://home.hijikinoheya.com/news/page/index.php"))
-        btn_license = QPushButton("ライセンス情報")
-        btn_license.clicked.connect(lambda: self.open_web("License", LICENSE_URL))
+        # メインリスト
+        self.container = QWidget(); self.vbox = QVBoxLayout(self.container); self.vbox.setAlignment(Qt.AlignTop)
+        scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setWidget(self.container)
+        main_layout = QVBoxLayout(); main_layout.addWidget(header); main_layout.addWidget(scroll)
+        central = QWidget(); central.setLayout(main_layout); self.setCentralWidget(central)
 
-        self.combo = QComboBox()
-        self.combo.addItem("すべてのカテゴリ")
-        self.combo.currentTextChanged.connect(self.filter_category)
-
-        top_layout = QHBoxLayout()
-        top_layout.addWidget(logo)
-        top_layout.addStretch()
-        top_layout.addWidget(btn_status)
-        top_layout.addWidget(btn_news)
-        top_layout.addWidget(btn_license)
-        top_layout.addWidget(self.combo)
-
-        self.container = QWidget()
-        self.vbox = QVBoxLayout(self.container)
-        self.vbox.setAlignment(Qt.AlignTop)
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setWidget(self.container)
-
-        main_layout = QVBoxLayout()
-        main_layout.addLayout(top_layout)
-        main_layout.addWidget(scroll)
-
-        central = QWidget()
-        central.setLayout(main_layout)
-        self.setCentralWidget(central)
-
-
-        self.manager = QNetworkAccessManager()
-        self.manager.finished.connect(self.on_data)
-
-
+        # ネットワーク
+        self.manager = QNetworkAccessManager(); self.manager.finished.connect(self.on_data)
+        self.apps = []; self.groups = {}
         QTimer.singleShot(0, self.load_data)
 
-        self.apps = []
-        self.groups = {}
-
     def open_web(self, title, url):
-        win = WebWindow(title, url)
-        win.show()
-        setattr(self, f"_win_{title}", win)
+        win = WebWindow(title, url); win.show(); setattr(self, f"_win_{title}", win)
+
+    def reload_apps(self):
+        self.resize(self._init_size)
+        self.load_data()
 
     def load_data(self):
-        req = QNetworkRequest(QUrl(API_URL))
-        self.manager.get(req)
+        self.manager.get(QNetworkRequest(QUrl(API_URL)))
 
     def on_data(self, reply):
         if reply.error():
-            QMessageBox.critical(self, "Error", "データの取得に失敗しました。")
+            QMessageBox.critical(self, "Error", "データ取得失敗")
             return
-        data = reply.readAll()
-        try:
-            arr = json.loads(str(data, 'utf-8'))
-            self.apps = arr
-            self.populate()
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"JSON解析エラー: {e}")
+        self.apps = json.loads(bytes(reply.readAll()).decode('utf-8'))
+        self.combo_os.clear(); self.combo_os.addItem("すべてのOS")
+        self.combo_cat.clear(); self.combo_cat.addItem("すべてのカテゴリ")
+        oss, cats = set(), set()
+        for app in self.apps:
+            oss.add(app.get('os','全OS'))
+            cats.add(app.get('category','未分類'))
+        for o in sorted(oss): self.combo_os.addItem(o)
+        for c in sorted(cats): self.combo_cat.addItem(c)
+        self.populate()
 
     def populate(self):
-        # 以前のカードをクリア
         for i in reversed(range(self.vbox.count())):
             w = self.vbox.itemAt(i).widget()
-            if w:
-                w.setParent(None)
+            if w: w.setParent(None)
         self.groups.clear()
-        self.combo.blockSignals(True)
-        self.combo.clear()
-        self.combo.addItem("すべてのカテゴリ")
-
-        # カテゴリごとにグルーピング
         for app in self.apps:
-            cat = app.get('category', '未分類')
+            cat = app.get('category','未分類')
             if cat not in self.groups:
-                box = QGroupBox(cat)
-                layout = QVBoxLayout(box)
-                self.groups[cat] = layout
-                self.vbox.addWidget(box)
-                self.combo.addItem(cat)
-            self.add_card(self.groups[cat], app)
+                box = QGroupBox(cat); box.setLayout(QVBoxLayout()); self.groups[cat] = box; self.vbox.addWidget(box)
+            self.add_entry(self.groups[cat].layout(), app)
 
-        self.combo.blockSignals(False)
-
-    def add_card(self, layout, app):
-        title = app.get('title', 'No Title')
-        desc = app.get('description', '')
-        link = app.get('download', '')
-        w = QWidget()
-        hl = QHBoxLayout(w)
-        lbl = QLabel(f"<b>{title}</b><br>{desc}")
-        btn = QPushButton("Download")
-        btn.clicked.connect(lambda _, url=link: QDesktopServices.openUrl(QUrl(url)))
+    def add_entry(self, layout, app):
+        title, desc, url = app['title'], app['description'], app['link']
+        kind, osn = app.get('type','app'), app.get('os','全OS')
+        folder, exe = app.get('folder', title), app.get('exe', f"{title}.exe")
+        w = QWidget(); hl = QHBoxLayout(w)
+        lbl = QLabel(f"<b>{title}</b><br>{desc}<br><i>対応OS: {osn}</i>")
         hl.addWidget(lbl)
-        hl.addStretch()
-        hl.addWidget(btn)
+        if kind == 'app':
+            exists = os.path.isdir(folder)
+            dl = QPushButton("Download"); dl.setEnabled(not exists)
+            dl.clicked.connect(lambda _, u=url, f=folder: DownloadWindow(u, f, parent=self))
+            hl.addWidget(dl)
+            run = QPushButton("実行"); run.setEnabled(exists)
+            run.clicked.connect(lambda _, f=folder, e=exe: subprocess.Popen([os.path.join(f, e)], shell=e.lower().endswith('.bat')))
+            hl.addWidget(run)
+            rd = QPushButton("ReadMe"); rd.setEnabled(exists)
+            rd.clicked.connect(lambda _, f=folder: subprocess.Popen(['notepad', os.path.join(f, 'README.txt')]))
+            hl.addWidget(rd)
+            dlt = QPushButton("削除"); dlt.setEnabled(exists)
+            dlt.clicked.connect(lambda _, f=folder: self.confirm_delete(f))
+            hl.addWidget(dlt)
+        else:
+            btn = QPushButton("開く")
+            btn.clicked.connect(lambda _, u=url: QDesktopServices.openUrl(QUrl(u)))
+            hl.addWidget(btn)
         layout.addWidget(w)
 
-    def filter_category(self, text):
-        for cat, lay in self.groups.items():
-            box = lay.parent()
-            box.setVisible(text == "すべてのカテゴリ" or text == cat)
+    def confirm_delete(self, folder):
+        res = QMessageBox.question(self, "削除確認", f"'{folder}'フォルダを削除しますか？", QMessageBox.Yes | QMessageBox.No)
+        if res == QMessageBox.Yes:
+            shutil.rmtree(folder)
+            self.reload_apps()
+
+    def filter_items(self, _):
+        so, sc = self.combo_os.currentText(), self.combo_cat.currentText()
+        for app in self.apps:
+            cat, osn = app.get('category',''), app.get('os','')
+            box = self.groups.get(cat)
+            if box:
+                box.setVisible((sc == 'すべてのカテゴリ' or sc == cat) and (so == 'すべてのOS' or so == osn))
 
 class SplashManager(QObject):
     finished = pyqtSignal()
-
     def __init__(self, splash):
-        super().__init__()
-        self.splash = splash
+        super().__init__(); self.splash = splash
         self.steps = [
             ("ネットワーク接続確認中", self.check_ping),
             ("サーバーの確認中", self.check_ping),
-            ("情報を取得中", self.wait_one_sec),
-            ("ロード中", self.wait_two_sec)
+            ("情報を取得中", self.wait1),
+            ("ロード中", self.wait2)
         ]
-        self.current = 0
-        self.dot_count = 0
-
-    def start(self):
-        self.run_step()
-
+        self.cur = 0; self.dots = 0
+    def start(self): self.run_step()
     def run_step(self):
-        if self.current >= len(self.steps):
-            self.splash.showMessage(f"{APP_TITLE} {APP_VERSION}", Qt.AlignBottom | Qt.AlignCenter, Qt.white)
+        if self.cur >= len(self.steps):
+            self.splash.showMessage(f"{APP_TITLE} {APP_VERSION}", Qt.AlignHCenter | Qt.AlignBottom, Qt.white)
             QTimer.singleShot(500, self.finished.emit)
             return
-        text, func = self.steps[self.current]
-        self.anim_timer = QTimer(self)
-        self.anim_timer.timeout.connect(lambda: self.update_dots(text))
-        self.anim_timer.start(500)
-        func()
-
+        txt, fn = self.steps[self.cur]
+        self.anim = QTimer(self)
+        self.anim.timeout.connect(lambda: self.update_dots(txt))
+        self.anim.start(500)
+        fn()
     def update_dots(self, base):
-        self.dot_count = (self.dot_count + 1) % 4
-        dots = '.' * self.dot_count
-        self.splash.showMessage(f"{base}{dots}", Qt.AlignBottom | Qt.AlignCenter, Qt.white)
-
+        self.dots = (self.dots + 1) % 4
+        self.splash.showMessage(f"{base}{'.' * self.dots}", Qt.AlignHCenter | Qt.AlignBottom, Qt.white)
     def check_ping(self):
-        # ping を5回実行し、成功を判定
         host = HOMEPAGE_URL.replace('https://','').replace('http://','')
-        count_flag = '-n' if sys.platform.startswith('win') else '-c'
-        cmd = ['ping', count_flag, '5', host]
-        result = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).wait()
-        QTimer.singleShot(300, self.step_done)
-
-    def wait_one_sec(self):
-        QTimer.singleShot(1000, self.step_done)
-
-    def wait_two_sec(self):
-        QTimer.singleShot(2000, self.step_done)
-
-    def step_done(self):
-        self.anim_timer.stop()
-        self.current += 1
+        flag = '-n' if sys.platform.startswith('win') else '-c'
+        subprocess.Popen(['ping', flag, '5', host], stdout=subprocess.DEVNULL).wait()
+        QTimer.singleShot(300, self.done)
+    def wait1(self): QTimer.singleShot(1000, self.done)
+    def wait2(self): QTimer.singleShot(2000, self.done)
+    def done(self):
+        self.anim.stop()
+        self.cur += 1
         self.run_step()
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
-    # スプラッシュ画面設定
-    pix = QPixmap(LOGO_PATH) if os.path.exists(LOGO_PATH) else QPixmap(400,300)
-    splash_pix = pix.scaled(400, 120, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-    splash = QSplashScreen(splash_pix, Qt.WindowStaysOnTopHint)
+    pix = QPixmap(LOGO_PATH) if os.path.exists(LOGO_PATH) else QPixmap(300,300)
+    splash = QSplashScreen(pix.scaled(800,600,Qt.KeepAspectRatio), Qt.WindowStaysOnTopHint)
     splash.show()
-    manager = SplashManager(splash)
-    downloader = AppDownloader()
-    manager.finished.connect(lambda: (splash.finish(downloader), downloader.show()))
-    manager.start()
+    mgr = SplashManager(splash)
+    win = AppDownloader()
+    mgr.finished.connect(lambda: (splash.finish(win), win.show()))
+    mgr.start()
     sys.exit(app.exec_())

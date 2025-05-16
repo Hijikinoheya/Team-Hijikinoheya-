@@ -1,0 +1,5 @@
+Windows
+pyinstaller --onefile --noconsole --icon=icons.png --add-data "logo.png;." --add-data "icons.png;." app_downloader.py
+
+Mac
+pyinstaller --onefile --noconsole --icon=icons.png --add-data "logo.png:." --add-data "icons.png:." app_downloader.py   
